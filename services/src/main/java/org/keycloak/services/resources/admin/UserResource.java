@@ -103,6 +103,7 @@ import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.ForbiddenException;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.NotFoundException;
+import jakarta.ws.rs.PATCH;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
@@ -327,6 +328,146 @@ public class UserResource {
             }
         }
     }
+
+    /**
+     * Patch User attributes.
+     *
+     * @param operations
+     * @return The user after updating
+     */
+    @PATCH
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Tag(name = KeycloakOpenAPI.Admin.Tags.USERS)
+    @Operation(summary = "Patch the user")
+    @APIResponses(value = {
+        @APIResponse(responseCode = "204", description = "No Content"),
+        @APIResponse(responseCode = "400", description = "Bad Request", content = @Content(schema = @Schema(implementation = ErrorRepresentation.class))),
+        @APIResponse(responseCode = "403", description = "Forbidden"),
+        @APIResponse(responseCode = "409", description = "Conflict", content = @Content(schema = @Schema(implementation = ErrorRepresentation.class))),
+        @APIResponse(responseCode = "500", description = "Internal Server Error", content = @Content(schema = @Schema(implementation = ErrorRepresentation.class)))
+    })
+    @Produces(MediaType.APPLICATION_JSON)
+    public UserRepresentation patch(
+        final List<JsonPatchOperation> operations
+    ) {
+      auth.users().requireManage(user);
+
+      // used by PUT /users/{id} but it doesn't seem necessary
+      // https://github.com/keycloak/keycloak/blob/main/services/src/main/java/org/keycloak/services/resources/admin/UserResource.java
+      //UserProfile profile = session.getProvider(UserProfileProvider.class).create(USER_API, attributes, user);
+
+      for (JsonPatchOperation operation : operations) {
+        apply(user, operation);
+      }
+
+      UserRepresentation rep = ModelToRepresentation.toRepresentation(session, realm, user);
+
+      // send event
+      adminEvent.realm(realm)
+          .resource(ResourceType.USER)
+          .operation(OperationType.UPDATE)
+          .resourcePath("users", user.getId())
+          // this is normally the data in the request
+          // FIXME this may not be persisting correctly
+          .representation(rep)
+          .success();
+
+      if (session.getTransactionManager().isActive()) {
+        session.getTransactionManager().commit();
+      }
+
+      return rep;
+    }
+
+    protected void apply(UserModel user, JsonPatchOperation operation) {
+      if (operation.op == null || operation.path == null) {
+        throw new BadRequestException("Invalid operation");
+      }
+      logger.fine("Patching " + user.getId() + ": " + operation.op + " " + operation.path);
+
+      String op = operation.op;
+      String[] path = operation.parsePath();
+
+      if ("copy".equals(op) || "move".equals(op)) {
+        throw new BadRequestException(op + " not yet supported");
+      }
+
+      if (path.length == 1 && userFields.contains(path[0])) {
+        // Update a base property
+        try {
+          Boolean isBoolean = "enabled".equals(path[0]) || "emailVerified".equals(path[0]);
+          Method setter = user.getClass().getMethod(
+              "set" + StringUtils.capitalize(path[0]),
+              isBoolean ? boolean.class : String.class);
+
+          if ("add".equals(op) || "replace".equals(op)) {
+            setter.invoke(user, operation.value);
+            return;
+          } else if ("remove".equals(op) && !isBoolean && !"username".equals(path[0])) {
+            setter.invoke(user, (String)null);
+            return;
+          } else {
+            throw new BadRequestException(op + " on " + operation.path + " not supported");
+          }
+        } catch (IllegalArgumentException e) {
+          throw new BadRequestException("Invalid value for " + operation.path, e);
+        } catch (NoSuchMethodException e) {
+          throw new InternalServerErrorException(op + " on " + operation.path + " failed", e);
+        } catch (SecurityException e) {
+          throw new InternalServerErrorException(op + " on " + operation.path + " failed", e);
+        } catch (IllegalAccessException e) {
+          throw new InternalServerErrorException(op + " on " + operation.path + " failed", e);
+        } catch (InvocationTargetException e) {
+          throw new InternalServerErrorException(op + " on " + operation.path + " failed", e);
+        }
+      }
+
+      if (!"attributes".equals(path[0]) || path.length < 2) {
+        throw new BadRequestException(op + " on " + operation.path + " not yet supported");
+      }
+
+      // Update an attribute
+      String attr = path[1];
+
+      if (path.length == 2) {
+        if ("remove".equals(op)) {
+          user.removeAttribute(attr);
+        } else if ("replace".equals(op) || "add".equals(op)) {
+          user.setAttribute(attr, (List<String>)operation.value);
+        } else {
+          throw new BadRequestException(op + " on " + operation.path + " not yet supported");
+        }
+      } else if (path.length == 3) {
+        List<String> values = user.getAttributes().get(attr);
+        if (values == null) {
+          values = new ArrayList<String>();
+        }
+
+        String indexStr = path[2];
+        int index = "-".equals(indexStr)
+            ? values.size()
+            : Integer.parseInt(indexStr);
+
+        String value = (String)operation.value;
+
+        if ("add".equals(op)) {
+          values.add(index, value);
+          user.setAttribute(attr, values);
+        } else if (index >= values.size()) {
+          throw new BadRequestException(operation.path + " out of bounds");
+        } else if ("remove".equals(op)) {
+          values.remove(index);
+        } else if ("replace".equals(op)) {
+          values.set(index, value);
+        } else {
+          throw new BadRequestException(op + " on " + operation.path + " not yet supported");
+        }
+      } else {
+        throw new BadRequestException("Unknown path: " + operation.path);
+      }
+    }
+
+
 
     /**
      * Get representation of the user
