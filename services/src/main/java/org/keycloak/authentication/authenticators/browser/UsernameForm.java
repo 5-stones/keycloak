@@ -17,6 +17,7 @@
 
 package org.keycloak.authentication.authenticators.browser;
 
+import java.net.URI;
 import java.util.Objects;
 
 import jakarta.ws.rs.core.MultivaluedMap;
@@ -25,6 +26,7 @@ import jakarta.ws.rs.core.Response;
 import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.authentication.authenticators.broker.AbstractIdpAuthenticator;
 import org.keycloak.authentication.authenticators.broker.util.SerializedBrokeredIdentityContext;
+import org.keycloak.common.util.KeycloakUriBuilder;
 import org.keycloak.forms.login.LoginFormsProvider;
 import org.keycloak.models.IdentityProviderModel;
 import org.keycloak.models.KeycloakSession;
@@ -32,7 +34,7 @@ import org.keycloak.models.UserModel;
 import org.keycloak.services.messages.Messages;
 import org.keycloak.sessions.AuthenticationSessionModel;
 
-public final class UsernameForm extends UsernamePasswordForm {
+public class UsernameForm extends UsernamePasswordForm {
 
     public UsernameForm() {
         super();
@@ -56,7 +58,18 @@ public final class UsernameForm extends UsernamePasswordForm {
 
     @Override
     protected boolean validateForm(AuthenticationFlowContext context, MultivaluedMap<String, String> formData) {
-        return validateUser(context, formData);
+        if (validateUser(context, formData)) {
+          return true;
+        }
+        // no user for username/email
+
+        if (isRegistrationRedirectEnabled(context)) {
+            URI registrationUrl = buildRegistrationUrl(context, formData.getFirst("username"));
+            Response response = Response.seeOther(registrationUrl).build();
+            context.challenge(response);
+        }
+
+        return false;
     }
 
     @Override
@@ -78,6 +91,20 @@ public final class UsernameForm extends UsernamePasswordForm {
         if (context.getRealm().isLoginWithEmailAllowed())
             return Messages.INVALID_USERNAME_OR_EMAIL;
         return Messages.INVALID_USERNAME;
+    }
+
+    protected boolean isRegistrationRedirectEnabled(AuthenticationFlowContext context) {
+        String enabledStr = context.getAuthenticatorConfig().getConfig()
+                .getOrDefault(UsernameFormFactory.CONFIG_PROP_REGISTRATION, "false");
+        return Boolean.parseBoolean(enabledStr);
+    }
+
+    protected URI buildRegistrationUrl(AuthenticationFlowContext context, String email) {
+        KeycloakUriBuilder builder = KeycloakUriBuilder.fromUri(context.getRefreshExecutionUrl());
+        builder.replacePath(builder.getPath().replace("/authenticate", "/registration"));
+        // allow for autofill in theme
+        if (email != null) builder.queryParam("email", email);
+        return builder.build();
     }
 
     /**

@@ -38,6 +38,7 @@ import org.keycloak.provider.ProviderConfigProperty;
 public class UsernameFormFactory implements AuthenticatorFactory {
 
     public static final String PROVIDER_ID = "auth-username-form";
+    public static final String CONFIG_PROP_REGISTRATION = "registrationRedirect";
 
     @Override
     public Authenticator create(KeycloakSession session) {
@@ -78,7 +79,7 @@ public class UsernameFormFactory implements AuthenticatorFactory {
 
     @Override
     public boolean isConfigurable() {
-        return false;
+        return true;
     }
 
     public static final AuthenticationExecutionModel.Requirement[] REQUIREMENT_CHOICES = {
@@ -102,7 +103,12 @@ public class UsernameFormFactory implements AuthenticatorFactory {
 
     @Override
     public List<ProviderConfigProperty> getConfigProperties() {
-        return null;
+        ProviderConfigProperty reg = new ProviderConfigProperty(CONFIG_PROP_REGISTRATION,
+                "Enable Registration Redirect",
+                "If username is not found, redirect to registration page",
+                ProviderConfigProperty.BOOLEAN_TYPE,
+                false);
+        return Collections.singletonList(reg);
     }
 
     @Override
